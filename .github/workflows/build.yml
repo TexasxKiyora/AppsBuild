@@ -6,20 +6,14 @@ on:
       job_id:
         description: "ID job dari Telegram"
         required: true
-      zip_url:
-        description: "Direct URL zip"
-        required: true
-      tag:
-        description: "Build tag"
-        required: true
-      build_type:
-        description: "release or debug"
+      zip_path:
+        description: "Path zip di repo (mis: uploads/xxx.zip). Kosongkan jika pakai zip_url"
         required: false
-        default: "release"
-        type: choice
-        options:
-          - release
-          - debug
+        default: ""
+      zip_url:
+        description: "Direct URL zip. Kosongkan jika pakai zip_path"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -47,8 +41,16 @@ jobs:
           mkdir -p work
           cd work
 
-          echo "MODE: zip_url"
-          curl -L --fail --retry 3 --retry-delay 2 "${{ inputs.zip_url }}" -o project.zip
+          if [ -n "${{ inputs.zip_url }}" ]; then
+            echo "MODE: zip_url"
+            curl -L --fail --retry 3 --retry-delay 2 "${{ inputs.zip_url }}" -o project.zip
+          elif [ -n "${{ inputs.zip_path }}" ]; then
+            echo "MODE: zip_path"
+            cp "../${{ inputs.zip_path }}" project.zip
+          else
+            echo "ERROR: zip_url atau zip_path wajib diisi."
+            exit 1
+          fi
 
           unzip -q project.zip -d project
 
@@ -56,18 +58,17 @@ jobs:
         working-directory: work/project
         run: flutter pub get
 
-      - name: Build APK
+      - name: Build APK (release)
         working-directory: work/project
-        run: flutter build apk --${{ inputs.build_type }} --no-tree-shake-icons
+        run: flutter build apk --release
 
       - name: Collect outputs
         run: |
           mkdir -p out
-          cp work/project/build/app/outputs/flutter-apk/*.apk "out/app-${{ inputs.job_id }}.apk"
+          cp work/project/build/app/outputs/flutter-apk/app-release.apk "out/app-release-${{ inputs.job_id }}.apk"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk-${{ inputs.job_id }}
           path: out/*.apk
-          retention-days: 7
