@@ -1,48 +1,176 @@
-name: 🌐 Web2APK Build
+name: 🌐 Web to APK Builder
 
 on:
   workflow_dispatch:
     inputs:
       web_url:
-        description: 'URL Website'
+        description: '🔗 URL Website'
         required: true
         type: string
       app_name:
-        description: 'Nama Aplikasi'
+        description: '📱 Nama Aplikasi'
         required: true
         type: string
       icon_url:
-        description: 'URL Icon'
+        description: '🖼️ URL Icon'
         required: true
         type: string
 
 jobs:
   build:
+    name: 🏗️ Building Web to APK
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 30
+    
     steps:
-      - name: Checkout
+      # ==================== CLEAN ====================
+      - name: 🧹 Clean Workspace
+        run: |
+          sudo rm -rf $GITHUB_WORKSPACE/*
+          sudo rm -rf $GITHUB_WORKSPACE/.[!.]*
+          echo "✅ Workspace bersih!"
+
+      # ==================== CHECKOUT ====================
+      - name: 📥 Checkout Repository
         uses: actions/checkout@v4
-      
-      - name: Setup Node.js
+
+      # ==================== SETUP NODE ====================
+      - name: 🧰 Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
-      
-      - name: Install PWA2APK
-        run: npm install -g pwa2apk
-        
-      - name: Build APK
+          node-version: '20'
+          cache: 'npm'
+
+      # ==================== SETUP JAVA ====================
+      - name: ☕ Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ==================== SETUP ANDROID SDK ====================
+      - name: 📱 Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      # ==================== SETUP FLUTTER ====================
+      - name: 🐦 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.24.0'
+          cache: true
+
+      # ==================== INSTALL PWA2APK ====================
+      - name: 📥 Install PWA2APK
         run: |
-          pwa2apk "${{ inputs.web_url }}" \
-            --name "${{ inputs.app_name }}" \
-            --icon "${{ inputs.icon_url }}" \
-            --output ./app.apk
-      
-      - name: Upload APK
+          npm install -g pwa2apk
+          echo "✅ PWA2APK terinstal!"
+
+      # ==================== DOWNLOAD ICON ====================
+      - name: 🖼️ Download Icon
+        run: |
+          mkdir -p assets
+          echo "📥 Mendownload icon dari: ${{ github.event.inputs.icon_url }}"
+          wget -q -O assets/icon.png "${{ github.event.inputs.icon_url }}"
+          
+          if [ ! -f "assets/icon.png" ]; then
+            echo "❌ Gagal download icon!"
+            exit 1
+          fi
+          
+          echo "✅ Icon berhasil diunduh!"
+
+      # ==================== BUILD ====================
+      - name: 🔧 Build APK
+        id: build
+        run: |
+          PACKAGE_NAME="com.webapp.$(echo '${{ github.event.inputs.app_name }}' | tr '[:upper:]' '[:lower:]' | sed 's/ //g' | sed 's/[^a-z0-9._-]//g')"
+          
+          echo "📦 Package Name: $PACKAGE_NAME"
+          echo "📱 App Name: ${{ github.event.inputs.app_name }}"
+          echo "🔗 URL: ${{ github.event.inputs.web_url }}"
+          
+          pwa2apk \
+            --app-name "${{ github.event.inputs.app_name }}" \
+            --package "$PACKAGE_NAME" \
+            --url "${{ github.event.inputs.web_url }}" \
+            --icon assets/icon.png \
+            --output app.apk
+          
+          if [ ! -f "app.apk" ]; then
+            echo "❌ Gagal build APK!"
+            exit 1
+          fi
+          
+          echo "✅ APK berhasil dibuat!"
+          echo "apk_size=$(du -h app.apk | cut -f1)" >> $GITHUB_OUTPUT
+
+      # ==================== UPLOAD ARTIFACT ====================
+      - name: 📤 Upload APK ke Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web2apk-build-${{ inputs.app_name }}
-          path: ./app.apk
+          name: web2apk-${{ github.event.inputs.app_name }}
+          path: app.apk
           retention-days: 7
+
+      # ==================== UPLOAD KE RELEASE ====================
+      - name: 📤 Upload APK ke Release
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📤 Uploading APK ke release..."
+          
+          TAG="web2apk-$(date +%s)"
+          
+          # Create release
+          RELEASE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/releases" \
+            -d "{
+              \"tag_name\": \"$TAG\",
+              \"name\": \"Web2APK - ${{ github.event.inputs.app_name }}\",
+              \"draft\": false,
+              \"prerelease\": true
+            }")
+          
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+          UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url')
+          
+          if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
+            echo "❌ Gagal buat release"
+            echo "$RELEASE_RESPONSE"
+            exit 1
+          fi
+          
+          echo "✅ Release ID: $RELEASE_ID"
+          
+          # Upload APK
+          curl -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --data-binary @"app.apk" \
+            "${UPLOAD_URL}?name=app.apk"
+          
+          echo "✅ APK berhasil diupload!"
+
+      # ==================== HASIL ====================
+      - name: ✅ Build Success
+        if: success()
+        run: |
+          echo "[RESULT_ANALYZE]"
+          echo "✅✅✅ WEB2APK SUKSES 100% ✅✅✅"
+          echo "APK telah diupload ke Artifact dan Release"
+          echo "[END_RESULT_ANALYZE]"
+
+      - name: ❌ Build Failed
+        if: failure()
+        run: |
+          echo "[RESULT_ANALYZE]"
+          echo "❌❌❌ WEB2APK GAGAL ❌❌❌"
+          echo "Cek log di atas untuk detail error"
+          echo "[END_RESULT_ANALYZE]"
+          exit 1
