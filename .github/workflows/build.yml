@@ -1,77 +1,96 @@
-name: 🔥 Build Flutter APK (COMPATIBLE - V3.19.6)
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
     inputs:
-      zip_url:
-        description: 'URL ZIP project Flutter'
-        required: true
-        type: string
-      tag:
-        description: 'Build tag'
-        required: true
-        type: string
-      build_type:
-        description: 'release or debug'
+      url:
+        description: 'Website URL'
         required: false
-        default: 'release'
-        type: choice
-        options:
-          - release
-          - debug
+        default: ''
+      app_name:
+        description: 'App Name'
+        required: true
+        default: 'MyApp'
+      package_name:
+        description: 'Package Name (com.example.app)'
+        required: true
+        default: 'com.web2apk.myapp'
+      user_id:
+        description: 'Telegram User ID'
+        required: true
+      zip_url:
+        description: 'ZIP URL (Flutter project)'
+        required: false
+        default: ''
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-
+    
     steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: 🛠 Setup Java
-        uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v3
         with:
-          distribution: 'temurin'
+          distribution: 'zulu'
           java-version: '17'
 
-      # 🔥 PAKE FLUTTER 3.19.6 (SAMA KAYAK BOT ORANG)
-      - name: 🐦 Setup Flutter (3.19.6)
-        uses: subosito/flutter-action@v2.16.0
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.6'
+          flutter-version: '3.22.0'
           channel: 'stable'
+          cache: true
 
-      - name: 📦 Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-34 build-tools;34.0.0'
+      - name: Install dependencies
+        run: flutter pub get
 
-      - name: 📥 Download Project
+      - name: Download project from ZIP URL
+        if: ${{ github.event.inputs.zip_url != '' }}
         run: |
-          mkdir -p app && cd app
-          echo "⬇️ Downloading from ${{ inputs.zip_url }}"
-          
-          curl -L --fail -o project.zip "${{ inputs.zip_url }}"
-          
-          if file project.zip | grep -q "Zip archive"; then
-            unzip -q project.zip && rm project.zip
-            echo "✅ Extract berhasil!"
-          else
-            echo "❌ BUKAN ZIP!" && exit 1
-          fi
+          curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
+          unzip -o project.zip -d ./project
+          rm project.zip
 
-      - name: 📦 Dependencies & Build
+      - name: Create project from URL
+        if: ${{ github.event.inputs.url != '' && github.event.inputs.zip_url == '' }}
         run: |
-          cd app
-          flutter pub get
-          flutter build apk --${{ inputs.build_type }} \
-            --no-tree-shake-icons \
-            --dart-define=BUILD_TAG=${{ inputs.tag }}
+          flutter create --project-name "${{ github.event.inputs.app_name }}" --org "com.web2apk" ./project
+          echo "package_name=${{ github.event.inputs.package_name }}" >> $GITHUB_ENV
 
-      - name: 📤 Upload APK
+      - name: Build APK
+        run: |
+          cd project
+          flutter build apk --release
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ inputs.build_type }}-${{ inputs.tag }}
-          path: app/build/app/outputs/flutter-apk/*.apk
-          retention-days: 7
+          name: ${{ github.event.inputs.app_name }}-release
+          path: project/build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Send to Telegram (success)
+        if: success()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ github.event.inputs.user_id }}
+          token: ${{ secrets.BOT_TOKEN }}
+          message: |
+            ✅ Build Berhasil!
+            📱 Nama: ${{ github.event.inputs.app_name }}
+            📦 Package: ${{ github.event.inputs.package_name }}
+            🔗 Download: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Send to Telegram (failed)
+        if: failure()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ github.event.inputs.user_id }}
+          token: ${{ secrets.BOT_TOKEN }}
+          message: |
+            ❌ Build Gagal!
+            📱 Nama: ${{ github.event.inputs.app_name }}
+            🔍 Cek log: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
