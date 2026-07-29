@@ -1,53 +1,80 @@
-name: Build APK
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'Flutter project ZIP URL'
+        description: 'URL ZIP project Flutter'
         required: true
+        type: string
       tag:
         description: 'Build tag'
         required: true
+        type: string
       build_type:
         description: 'release or debug'
+        required: false
         default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.16.0'
-
-      - name: Setup Java
-        uses: actions/setup-java@v3
+      - name: 🛠 Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Download Project
-        run: |
-          wget -O project.zip "${{ inputs.zip_url }}"
-          unzip project.zip -d app
+      - name: 🐦 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
 
-      - name: Get Dependencies
+      - name: 📦 Setup Android SDK
+        run: |
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O sdk.zip
+          unzip -q sdk.zip -d $HOME/android-sdk/cmdline-tools
+          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest || true
+          rm sdk.zip
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null 2>&1
+
+      - name: 📥 Download Project
+        run: |
+          mkdir -p app
+          cd app
+          wget -q -O project.zip "${{ inputs.zip_url }}"
+          unzip -q project.zip
+          rm project.zip
+
+      - name: 📦 Get Dependencies
         run: |
           cd app
           flutter pub get
 
-      - name: Build APK
+      - name: 🔨 Build APK
         run: |
           cd app
-          flutter build apk --${{ inputs.build_type }}
+          flutter build apk --${{ inputs.build_type }} --no-tree-shake-icons
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+      - name: 📤 Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: app-release
+          name: app-${{ inputs.build_type }}
           path: app/build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
