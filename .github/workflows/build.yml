@@ -20,14 +20,20 @@ on:
           - debug
           - release
 
+env:
+  JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+  ANDROID_HOME: /opt/android-sdk
+  ANDROID_SDK_ROOT: /opt/android-sdk
+  FLUTTER_ROOT: /opt/flutter
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     
     steps:
       # ─── 1. SETUP ──────────────────────────────────────────────────────
-      - name: 📦 Setup
+      - name: 📦 Setup System
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq git curl unzip zip wget jq
@@ -36,27 +42,35 @@ jobs:
       - name: ☕ Install JDK 17
         run: |
           sudo apt-get install -y -qq openjdk-17-jdk
-          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+          java -version
 
       # ─── 3. FLUTTER ──────────────────────────────────────────────────
+      - name: 📱 Cache Flutter SDK
+        id: cache-flutter
+        uses: actions/cache@v3
+        with:
+          path: /opt/flutter
+          key: flutter-sdk-stable-v1
+
       - name: 📱 Install Flutter
+        if: steps.cache-flutter.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 -b stable https://github.com/flutter/flutter.git /opt/flutter
-          echo "/opt/flutter/bin" >> $GITHUB_PATH
-          echo "FLUTTER_ROOT=/opt/flutter" >> $GITHUB_ENV
-          
-          # Pre-cache Flutter SDK
           export PATH="/opt/flutter/bin:$PATH"
           flutter precache
 
-      # ─── 4. ANDROID SDK (PAKE CACHE) ────────────────────────────────
+      - name: 📱 Add Flutter to PATH
+        run: |
+          echo "/opt/flutter/bin" >> $GITHUB_PATH
+          echo "/opt/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
+      # ─── 4. ANDROID SDK ────────────────────────────────────────────────
       - name: 🤖 Cache Android SDK
         id: cache-android
         uses: actions/cache@v3
         with:
           path: /opt/android-sdk
-          key: android-sdk-${{ runner.os }}-21
-          restore-keys: android-sdk-${{ runner.os }}-
+          key: android-sdk-21-v3
 
       - name: 🤖 Install Android SDK
         if: steps.cache-android.outputs.cache-hit != 'true'
@@ -64,133 +78,119 @@ jobs:
           mkdir -p /opt/android-sdk
           cd /opt/android-sdk
           
-          # Download dengan retry
-          for i in {1..5}; do
-            echo "Attempt $i..."
-            wget -q --timeout=30 https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip && break
-            sleep 3
-          done
-          
+          wget -q --timeout=30 https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q commandlinetools-linux-11076708_latest.zip
           rm commandlinetools-linux-11076708_latest.zip
+          
           mkdir -p cmdline-tools
           mv cmdline-tools latest
           mv latest cmdline-tools/
-          
-          echo "ANDROID_HOME=/opt/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=/opt/android-sdk" >> $GITHUB_ENV
-          echo "/opt/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: 🤖 Setup Android SDK (Min SDK 21)
+      - name: 🤖 Setup Android SDK & Accept Licenses
         run: |
-          export ANDROID_HOME=/opt/android-sdk
-          export PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin
-          
-          # License
-          echo "y" | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses 2>&1 | grep -v "Warning" || true
-          
-          # Install platforms (Min SDK 21 = Android 5.0)
-          # platform;android-21 = Android 5.0 Lollipop
-          /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-21" "build-tools;34.0.0" 2>&1 | grep -v "Warning" || true
-          
-          # Tambahan platform 33 & 34 untuk kompatibilitas
-          /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-33" "platforms;android-34" 2>&1 | grep -v "Warning" || true
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-21" "platforms;android-33" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1
 
-      # ─── 5. DOWNLOAD PROJECT ──────────────────────────────────────────
+      # ─── 5. GRADLE CACHE ──────────────────────────────────────────────
+      - name: 📦 Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/build.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # ─── 6. DOWNLOAD PROJECT ──────────────────────────────────────────
       - name: 📥 Download Project
         run: |
-          for i in {1..3}; do
-            curl -L --max-time 60 "${{ github.event.inputs.zip_url }}" -o /tmp/project.zip && break
-            sleep 3
-          done
+          curl -L --max-time 120 "${{ github.event.inputs.zip_url }}" -o /tmp/project.zip
           
-          if [ ! -s /tmp/project.zip ]; then
-            echo "❌ Gagal download!"
+          # Validasi apakah file beneran ZIP (bukan HTML error dari server)
+          if file /tmp/project.zip | grep -q "Zip archive"; then
+            echo "✅ File valid ZIP"
+          else
+            echo "❌ File bukan ZIP (kemungkinan halaman error 404/403)"
+            cat /tmp/project.zip
             exit 1
           fi
           
           unzip -q /tmp/project.zip -d /tmp/project
-          rm /tmp/project.zip
           
-          PROJECT_DIR=$(find /tmp/project -name "pubspec.yaml" -type f -printf "%h\n" | head -1)
+          # Cari directory yang ada pubspec.yaml (cara lebih aman)
+          PROJECT_DIR=$(find /tmp/project -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
+          
           if [ -z "$PROJECT_DIR" ]; then
             echo "❌ pubspec.yaml tidak ditemukan!"
-            echo "[RESULT_ANALYZE]"
-            echo "ERROR: Tidak ada pubspec.yaml di dalam ZIP."
-            echo "[END_RESULT_ANALYZE]"
             exit 1
           fi
           
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "✅ Project directory: $PROJECT_DIR"
 
-      # ─── 6. UPDATE PUBSPEC.YAML (Min SDK 21) ─────────────────────────
-      - name: 📝 Update Min SDK
+      # ─── 7. UPDATE MIN SDK & SIGNING CONFIG ───────────────────────────
+      - name: 📝 Update Min SDK & Setup Keystore
         run: |
           cd $PROJECT_DIR
           
-          # Cek pubspec.yaml
-          if grep -q "minSdkVersion" android/app/build.gradle; then
-            echo "✅ minSdkVersion sudah ada di build.gradle"
-          else
-            echo "⚠️ Menambahkan minSdkVersion 21 ke build.gradle..."
-            sed -i '/defaultConfig {/a \        minSdkVersion 21' android/app/build.gradle
+          # Update minSdkVersion dengan perl (lebih aman dari sed untuk Gradle)
+          if [ -f android/app/build.gradle ]; then
+            perl -i -pe 's/minSdkVersion\s+\d+/minSdkVersion 21/g' android/app/build.gradle
+            # Kalau minSdkVersion belum ada, inject ke defaultConfig
+            if ! grep -q "minSdkVersion" android/app/build.gradle; then
+              perl -i -pe 's/(defaultConfig\s*{)/$1\n            minSdkVersion 21/g' android/app/build.gradle
+            fi
           fi
           
-          # Cek juga di app/build.gradle.kts
           if [ -f android/app/build.gradle.kts ]; then
-            sed -i '/defaultConfig {/a \        minSdkVersion(21)' android/app/build.gradle.kts
+            perl -i -pe 's/minSdkVersion\s*=\s*\d+/minSdkVersion = 21/g' android/app/build.gradle.kts
+            if ! grep -q "minSdkVersion" android/app/build.gradle.kts; then
+              perl -i -pe 's/(defaultConfig\s*{)/$1\n            minSdkVersion = 21/g' android/app/build.gradle.kts
+            fi
           fi
           
-          cat android/app/build.gradle | grep -A5 "defaultConfig"
+          echo "✅ Min SDK updated to 21"
+          
+          # Setup Keystore untuk Release build
+          if [ "${{ github.event.inputs.build_type }}" == "release" ]; then
+            if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+              echo "🔑 Keystore ditemukan di Secrets, decoding..."
+              echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/keystore.jks
+            else
+              echo "⚠️ Tidak ada KEYSTORE_BASE64 di Secrets. Membuat debug keystore agar build tidak gagal..."
+              keytool -genkey -v -keystore android/app/debug-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias release -storepass android -keypass android -dname "CN=Dev, OU=Dev, O=Dev, L=Dev, ST=Dev, C=ID"
+            fi
+          fi
 
-      # ─── 7. GET DEPENDENCIES ──────────────────────────────────────────
+      # ─── 8. GET DEPENDENCIES ──────────────────────────────────────────
       - name: 📦 Get Flutter Dependencies
         run: |
-          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:$PATH"
-          export FLUTTER_ROOT=/opt/flutter
-          export ANDROID_HOME=/opt/android-sdk
-          export ANDROID_SDK_ROOT=/opt/android-sdk
-          
           cd $PROJECT_DIR
           flutter clean
           flutter pub get
 
-      # ─── 8. LINTING ────────────────────────────────────────────────────
+      # ─── 9. LINTING ────────────────────────────────────────────────────
       - name: 🔍 Code Analysis
-        id: analyze
         run: |
-          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:$PATH"
-          export FLUTTER_ROOT=/opt/flutter
-          export ANDROID_HOME=/opt/android-sdk
-          export ANDROID_SDK_ROOT=/opt/android-sdk
-          
           cd $PROJECT_DIR
-          
-          echo "[RESULT_ANALYZE]"
           flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | head -50 || echo "✅ No issues found"
-          echo "[END_RESULT_ANALYZE]"
 
-      # ─── 9. BUILD APK ──────────────────────────────────────────────────
+      # ─── 10. BUILD APK ──────────────────────────────────────────────────
       - name: 🛠️ Build APK (${{ github.event.inputs.build_type }})
-        id: build
         run: |
-          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:$PATH"
-          export FLUTTER_ROOT=/opt/flutter
-          export ANDROID_HOME=/opt/android-sdk
-          export ANDROID_SDK_ROOT=/opt/android-sdk
-          
           cd $PROJECT_DIR
           
           echo "🛠️ Building APK (${{ github.event.inputs.build_type }})..."
-          echo "📱 Min SDK: 21 (Android 5.0 Lollipop)"
-          
           BUILD_START=$(date +%s)
           
           if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
-            flutter build apk --debug 2>&1 | tee build.log || BUILD_EXIT=1
+            flutter build apk --debug 2>&1 | tee build.log
           else
-            flutter build apk --release 2>&1 | tee build.log || BUILD_EXIT=1
+            # Build release, kalau gagal karena signing, pakai debug signing
+            flutter build apk --release 2>&1 | tee build.log || {
+              echo "⚠️ Release build gagal, kemungkinan signing config di Gradle, mencoba pakai debug signing..."
+              flutter build apk --release --debug-keystore-path=android/app/debug-keystore.jks --debug-keystore-password=android --debug-keystore-key-password=android --debug-keystore-key-alias=release 2>&1 | tee build.log
+            }
           fi
           
           BUILD_END=$(date +%s)
@@ -198,33 +198,26 @@ jobs:
           echo "⏱️ Build duration: ${DURATION}s"
           
           # Check result
-          if [ -f build/app/outputs/flutter-apk/app-release.apk ] || \
-             [ -f build/app/outputs/flutter-apk/app-debug.apk ] || \
-             [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ] || \
-             [ -f build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ]; then
+          if ls build/app/outputs/flutter-apk/*.apk 1> /dev/null 2>&1; then
             echo "✅ Build Success!"
             echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
           else
             echo "❌ Build Failed!"
             echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
-            
-            echo "[RESULT_ANALYZE]"
-            tail -100 build.log | grep -E "(error|fail|FAILURE)" || echo "No specific error found"
-            echo "[END_RESULT_ANALYZE]"
+            tail -100 build.log
             exit 1
           fi
 
-      # ─── 10. UPLOAD ARTIFACT ──────────────────────────────────────────
+      # ─── 11. UPLOAD ARTIFACT ──────────────────────────────────────────
       - name: 📤 Upload APK Artifact
         if: env.BUILD_SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk
-          path: |
-            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+          name: flutter-apk-${{ github.event.inputs.tag }}
+          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
-      # ─── 11. UPLOAD TO RELEASE ────────────────────────────────────────
+      # ─── 12. UPLOAD TO RELEASE ────────────────────────────────────────
       - name: 📦 Upload to Release
         if: env.BUILD_SUCCESS == 'true'
         env:
@@ -233,11 +226,6 @@ jobs:
           cd $PROJECT_DIR
           
           APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -1)
-          if [ -z "$APK_FILE" ]; then
-            echo "❌ APK file not found!"
-            exit 1
-          fi
-          
           APK_NAME=$(basename "$APK_FILE")
           APK_SIZE=$(du -h "$APK_FILE" | cut -f1)
           echo "📦 APK: $APK_NAME ($APK_SIZE)"
@@ -264,26 +252,15 @@ jobs:
             
             echo "✅ Release published!"
           else
-            echo "⚠️ Release not found, saving as artifact only"
+            echo "⚠️ Release tag ${{ github.event.inputs.tag }} not found. Skipping release upload."
           fi
-
-      # ─── 12. SUCCESS ──────────────────────────────────────────────────
-      - name: ✅ Build Success
-        if: env.BUILD_SUCCESS == 'true'
-        run: |
-          echo "🎉 Build Completed Successfully!"
-          echo "Tag: ${{ github.event.inputs.tag }}"
-          echo "Type: ${{ github.event.inputs.build_type }}"
-          echo "Min SDK: 21 (Android 5.0 Lollipop)"
 
       # ─── 13. FAILURE ──────────────────────────────────────────────────
       - name: ❌ Build Failed
         if: failure()
         run: |
           echo "💀 Build Gagal!"
-          echo "Tag: ${{ github.event.inputs.tag }}"
-          
           if [ -f "$PROJECT_DIR/build.log" ]; then
-            echo "=== LAST 50 LINES OF BUILD LOG ==="
-            tail -50 "$PROJECT_DIR/build.log"
+            echo "=== LAST 80 LINES OF BUILD LOG ==="
+            tail -80 "$PROJECT_DIR/build.log"
           fi
