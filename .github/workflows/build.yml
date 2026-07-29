@@ -1,309 +1,61 @@
-name: Flutter Build APK GACOR
+name: Flutter Build APK
 
 on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP file dari GitHub Release'
+        description: 'URL ZIP project'
         required: true
-        type: string
       tag:
         description: 'Tag release'
         required: true
-        type: string
       build_type:
-        description: 'Debug atau Release'
+        description: 'Debug or Release'
         required: true
-        type: choice
-        options:
-          - debug
-          - release
         default: 'release'
-      flutter_version:
-        description: 'Versi Flutter'
-        required: false
-        type: string
-        default: '3.24.0'
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     
     steps:
-      - name: 🧹 TOXIC CLEANUP KONTOL 🤬
-        run: |
-          echo "========================================="
-          echo "  FLUTTER BUILD - KYZOO GACOR NGENTOD "
-          echo "========================================="
-          echo "🧹 Bersihin workspace tai..."
-          sudo rm -rf $GITHUB_WORKSPACE/*
-          sudo rm -rf /home/runner/.gradle/caches/
-          sudo rm -rf /home/runner/.pub-cache/
-          sudo rm -rf ~/.android/cache
-          df -h
-          echo "✅ Workspace udah bersih kaya pantat bayi!"
-
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: 🧰 Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: 📦 Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-34 build-tools;34.0.0'
 
       - name: 🐦 Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.22.0'
           channel: 'stable'
-          flutter-version: ${{ inputs.flutter_version }}
-          cache: true
 
-      - name: 📥 Download ZIP dari Release
+      - name: 📦 Download ZIP
         run: |
-          mkdir -p workspace
-          cd workspace
-          echo "📥 Downloading ZIP dari: ${{ inputs.zip_url }}"
-          wget -q --header="Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-               -O project.zip "${{ inputs.zip_url }}"
-          
-          if [ ! -f project.zip ]; then
-            echo "❌ GAGAL DOWNLOAD ZIP TAI!"
-            exit 1
-          fi
-          
-          echo "📦 ZIP berhasil diunduh, size: $(du -h project.zip | cut -f1)"
+          wget -O project.zip "${{ inputs.zip_url }}"
+          unzip project.zip -d project/
+          ls -la project/
 
-      - name: 📂 Extract Project
+      - name: 🔧 Setup Project
+        working-directory: ./project
         run: |
-          cd workspace
-          echo "📂 Extract project..."
-          unzip -q project.zip -d extracted/
-          ls -la extracted/
-          
-          # Cari pubspec.yaml
-          if [ -f "extracted/pubspec.yaml" ]; then
-            echo "✅ pubspec.yaml di root"
-            mv extracted/* ./ 2>/dev/null || true
-          elif [ -f "extracted/*/pubspec.yaml" ]; then
-            echo "✅ pubspec.yaml di subfolder"
-            SUBDIR=$(find extracted -name "pubspec.yaml" -printf "%h\n" | head -1)
-            mv $SUBDIR/* ./ 2>/dev/null || true
-          else
-            echo "🔍 Searching pubspec.yaml..."
-            find extracted -name "pubspec.yaml" -exec dirname {} \; | while read dir; do
-              if [ -f "$dir/pubspec.yaml" ]; then
-                echo "✅ Ditemukan di: $dir"
-                mv $dir/* ./ 2>/dev/null || true
-                break
-              fi
-            done
-          fi
-          
-          echo "📂 Struktur setelah extract:"
-          ls -la
-          
-          # Cek pubspec.yaml
-          if [ ! -f "pubspec.yaml" ]; then
-            echo "❌ pubspec.yaml TIDAK DITEMUKAN! Project bukan Flutter tai!"
-            exit 1
-          fi
-          
-          echo "✅ Ekstraksi selesai"
-
-      - name: 🔧 Flutter Clean & Get
-        run: |
-          cd workspace
-          echo "🧹 Flutter clean..."
-          flutter clean || true
-          rm -rf .dart_tool/ .packages pubspec.lock
-          
-          echo "📦 Flutter pub get..."
           flutter pub get
-          
-          echo "📦 Flutter pub upgrade..."
-          flutter pub upgrade --major-versions || true
-          
-          echo "✅ Dependencies siap"
+          flutter clean
 
-      - name: 🔍 Flutter Analyze
+      - name: 🛠️ Build APK
+        working-directory: ./project
         run: |
-          cd workspace
-          echo "🔍 Running flutter analyze..."
-          flutter analyze || true
-          
-          echo "📊 Flutter doctor..."
-          flutter doctor -v || true
-
-      - name: 🏗️ Build APK
-        run: |
-          cd workspace
-          echo "========================================="
-          echo "  🔨 BUILDING APK - ${{ inputs.build_type }} "
-          echo "========================================="
-          
-          if [ "${{ inputs.build_type }}" = "debug" ]; then
-            echo "🔧 Build DEBUG..."
+          if [ "${{ inputs.build_type }}" == "debug" ]; then
             flutter build apk --debug
           else
-            echo "🚀 Build RELEASE..."
-            flutter build apk --release --split-per-abi
+            flutter build apk --release
           fi
-          
-          echo "✅ Build APK selesai"
-
-      - name: 📊 Cek Hasil Build
-        id: cek_apk
-        run: |
-          cd workspace
-          
-          echo "🔍 Mencari APK yang dihasilkan..."
-          
-          # Cari APK
-          APK_FILES=()
-          while IFS= read -r file; do
-            APK_FILES+=("$file")
-          done < <(find . -name "*.apk" -type f 2>/dev/null)
-          
-          if [ ${#APK_FILES[@]} -eq 0 ]; then
-            echo "❌ GAGAL: Tidak ada APK yang dihasilkan!"
-            echo "📁 Struktur direktori:"
-            find . -type d -name "build" -exec ls -la {} \; 2>/dev/null || echo "build/ tidak ditemukan"
-            find . -type d -name "outputs" -exec ls -la {} \; 2>/dev/null || echo "outputs/ tidak ditemukan"
-            exit 1
-          fi
-          
-          echo "✅ Ditemukan ${#APK_FILES[@]} APK:"
-          for apk in "${APK_FILES[@]}"; do
-            echo "  - $apk ($(du -h "$apk" | cut -f1))"
-          done
-          
-          # Ambil APK pertama
-          APK_PATH="${APK_FILES[0]}"
-          APK_NAME=$(basename "$APK_PATH")
-          APK_SIZE=$(du -h "$APK_PATH" | cut -f1)
-          
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
-          echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
-          echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
-          echo "✅ Hasil build diverifikasi"
 
       - name: 📤 Upload APK ke Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ inputs.build_type }}-${{ github.run_number }}
-          path: workspace/${{ steps.cek_apk.outputs.apk_path }}
+          name: app-build
+          path: project/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
-      - name: 📤 Upload APK ke Release
-        if: steps.cek_apk.outputs.apk_path != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd workspace
-          APK_FILE="${{ steps.cek_apk.outputs.apk_path }}"
-          APK_NAME="${{ steps.cek_apk.outputs.apk_name }}"
-          
-          echo "📤 Uploading $APK_NAME ke release ${{ inputs.tag }}"
-          
-          # Cari release ID dari tag
-          RELEASE_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ inputs.tag }}" \
-            | jq -r '.id')
-          
-          if [ "$RELEASE_ID" = "null" ] || [ -z "$RELEASE_ID" ]; then
-            echo "❌ Release tidak ditemukan"
-            echo "⚠️ Buat release baru dengan tag: ${{ inputs.tag }}"
-            exit 1
-          fi
-          
-          # Upload APK
-          UPLOAD_URL="https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$APK_NAME"
-          
-          echo "📤 Upload ke: $UPLOAD_URL"
-          
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Content-Type: application/vnd.android.package-archive" \
-            --data-binary @"$APK_FILE" \
-            "$UPLOAD_URL")
-          
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n-1)
-          
-          if [ "$HTTP_CODE" -eq 201 ]; then
-            echo "✅ APK berhasil diupload ke release"
-          else
-            echo "❌ Gagal upload! HTTP $HTTP_CODE"
-            echo "$BODY"
-            exit 1
-          fi
-
-      - name: 📱 Notif ke Telegram
-        if: always()
-        run: |
-          if [ "${{ job.status }}" = "success" ]; then
-            STATUS="✅ SUKSES NGENTOD!"
-            EMOJI="🎉"
-          else
-            STATUS="❌ GAGAL TAI!"
-            EMOJI="💀"
-          fi
-          
-          APK_NAME="${{ steps.cek_apk.outputs.apk_name || 'unknown.apk' }}"
-          APK_SIZE="${{ steps.cek_apk.outputs.apk_size || '0 MB' }}"
-          
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/sendMessage" \
-            -d chat_id="${{ secrets.OWNER_ID }}" \
-            -d text="$EMOJI FLUTTER BUILD SELESAI KONTOL!$EMOJI%0A%0A📊 Status: $STATUS%0A📱 Nama APK: $APK_NAME%0A📦 Ukuran: $APK_SIZE%0A🔧 Mode: ${{ inputs.build_type }}%0A🏷️ Tag: ${{ inputs.tag }}%0A🕒 Waktu: $(date '+%Y-%m-%d %H:%M:%S')%0A%0A💀 CEK ARTIFACT DI GITHUB!"
-
-      - name: 📊 Hasil Analisis Build
-        if: failure()
-        run: |
-          echo "::group::📊 HASIL ANALISIS BUILD"
-          echo "❌ BUILD GAGAL - Cek error di atas"
-          echo ""
-          echo "🔍 Penyebab umum error:"
-          echo "1. pubspec.yaml korup atau missing"
-          echo "2. Dependencies conflict"
-          echo "3. Android SDK tidak kompatibel"
-          echo "4. Kode Flutter error"
-          echo "::endgroup::"
-          echo "[RESULT_ANALYZE]"
-          echo "❌ Build gagal dengan error"
-          echo "Cek log di atas untuk detail"
-          echo "[END_RESULT_ANALYZE]"
-
-      - name: ✅ Hasil Analisis Sukses
-        if: success()
-        run: |
-          echo "========================================="
-          echo "  🎉 BUILD SUKSES GACOR KONTOL! "
-          echo "========================================="
-          echo "[RESULT_ANALYZE]"
-          echo "✅ BUILD SUKSES!"
-          echo "📱 APK: ${{ steps.cek_apk.outputs.apk_name }}"
-          echo "📦 Size: ${{ steps.cek_apk.outputs.apk_size }}"
-          echo "🔧 Mode: ${{ inputs.build_type }}"
-          echo "🏷️ Tag: ${{ inputs.tag }}"
-          echo "📤 Sudah diupload ke Artifact dan Release"
-          echo "[END_RESULT_ANALYZE]"
-
-      - name: 🗑️ Cleanup
-        if: always()
-        run: |
-          echo "🧹 Cleanup files..."
-          cd workspace || true
-          rm -rf extracted/ project.zip 2>/dev/null || true
-          echo "✅ Cleanup selesai"
+      - name: 🧹 Bersih-bersih
+        run: rm -rf project/ project.zip
