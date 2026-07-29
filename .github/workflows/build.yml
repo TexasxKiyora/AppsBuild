@@ -1,266 +1,53 @@
-name: Flutter Build APK
+name: Build APK
 
 on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP project Flutter'
+        description: 'Flutter project ZIP URL'
         required: true
-        type: string
       tag:
-        description: 'Tag build'
+        description: 'Build tag'
         required: true
-        type: string
       build_type:
-        description: 'Tipe build (debug/release)'
-        required: true
+        description: 'release or debug'
         default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
-
-env:
-  JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
-  ANDROID_HOME: /opt/android-sdk
-  ANDROID_SDK_ROOT: /opt/android-sdk
-  FLUTTER_ROOT: /opt/flutter
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
     steps:
-      # ─── 1. SETUP ──────────────────────────────────────────────────────
-      - name: 📦 Setup System
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq git curl unzip zip wget jq
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      # ─── 2. JDK 17 ────────────────────────────────────────────────────
-      - name: ☕ Install JDK 17
-        run: |
-          sudo apt-get install -y -qq openjdk-17-jdk
-          java -version
-
-      # ─── 3. FLUTTER ──────────────────────────────────────────────────
-      - name: 📱 Cache Flutter SDK
-        id: cache-flutter
-        uses: actions/cache@v3
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          path: /opt/flutter
-          key: flutter-sdk-stable-v1
+          flutter-version: '3.16.0'
 
-      - name: 📱 Install Flutter
-        if: steps.cache-flutter.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 -b stable https://github.com/flutter/flutter.git /opt/flutter
-          export PATH="/opt/flutter/bin:$PATH"
-          flutter precache
-
-      - name: 📱 Add Flutter to PATH
-        run: |
-          echo "/opt/flutter/bin" >> $GITHUB_PATH
-          echo "/opt/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-
-      # ─── 4. ANDROID SDK ────────────────────────────────────────────────
-      - name: 🤖 Cache Android SDK
-        id: cache-android
-        uses: actions/cache@v3
+      - name: Setup Java
+        uses: actions/setup-java@v3
         with:
-          path: /opt/android-sdk
-          key: android-sdk-21-v3
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: 🤖 Install Android SDK
-        if: steps.cache-android.outputs.cache-hit != 'true'
+      - name: Download Project
         run: |
-          mkdir -p /opt/android-sdk
-          cd /opt/android-sdk
-          
-          wget -q --timeout=30 https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q commandlinetools-linux-11076708_latest.zip
-          rm commandlinetools-linux-11076708_latest.zip
-          
-          mkdir -p cmdline-tools
-          mv cmdline-tools latest
-          mv latest cmdline-tools/
+          wget -O project.zip "${{ inputs.zip_url }}"
+          unzip project.zip -d app
 
-      - name: 🤖 Setup Android SDK & Accept Licenses
+      - name: Get Dependencies
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-21" "platforms;android-33" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1
-
-      # ─── 5. GRADLE CACHE ──────────────────────────────────────────────
-      - name: 📦 Cache Gradle
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/build.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
-
-      # ─── 6. DOWNLOAD PROJECT ──────────────────────────────────────────
-      - name: 📥 Download Project
-        run: |
-          curl -L --max-time 120 "${{ github.event.inputs.zip_url }}" -o /tmp/project.zip
-          
-          # Validasi apakah file beneran ZIP (bukan HTML error dari server)
-          if file /tmp/project.zip | grep -q "Zip archive"; then
-            echo "✅ File valid ZIP"
-          else
-            echo "❌ File bukan ZIP (kemungkinan halaman error 404/403)"
-            cat /tmp/project.zip
-            exit 1
-          fi
-          
-          unzip -q /tmp/project.zip -d /tmp/project
-          
-          # Cari directory yang ada pubspec.yaml (cara lebih aman)
-          PROJECT_DIR=$(find /tmp/project -name "pubspec.yaml" -exec dirname {} \; | head -n 1)
-          
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "❌ pubspec.yaml tidak ditemukan!"
-            exit 1
-          fi
-          
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-          echo "✅ Project directory: $PROJECT_DIR"
-
-      # ─── 7. UPDATE MIN SDK & SIGNING CONFIG ───────────────────────────
-      - name: 📝 Update Min SDK & Setup Keystore
-        run: |
-          cd $PROJECT_DIR
-          
-          # Update minSdkVersion dengan perl (lebih aman dari sed untuk Gradle)
-          if [ -f android/app/build.gradle ]; then
-            perl -i -pe 's/minSdkVersion\s+\d+/minSdkVersion 21/g' android/app/build.gradle
-            # Kalau minSdkVersion belum ada, inject ke defaultConfig
-            if ! grep -q "minSdkVersion" android/app/build.gradle; then
-              perl -i -pe 's/(defaultConfig\s*{)/$1\n            minSdkVersion 21/g' android/app/build.gradle
-            fi
-          fi
-          
-          if [ -f android/app/build.gradle.kts ]; then
-            perl -i -pe 's/minSdkVersion\s*=\s*\d+/minSdkVersion = 21/g' android/app/build.gradle.kts
-            if ! grep -q "minSdkVersion" android/app/build.gradle.kts; then
-              perl -i -pe 's/(defaultConfig\s*{)/$1\n            minSdkVersion = 21/g' android/app/build.gradle.kts
-            fi
-          fi
-          
-          echo "✅ Min SDK updated to 21"
-          
-          # Setup Keystore untuk Release build
-          if [ "${{ github.event.inputs.build_type }}" == "release" ]; then
-            if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-              echo "🔑 Keystore ditemukan di Secrets, decoding..."
-              echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/keystore.jks
-            else
-              echo "⚠️ Tidak ada KEYSTORE_BASE64 di Secrets. Membuat debug keystore agar build tidak gagal..."
-              keytool -genkey -v -keystore android/app/debug-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias release -storepass android -keypass android -dname "CN=Dev, OU=Dev, O=Dev, L=Dev, ST=Dev, C=ID"
-            fi
-          fi
-
-      # ─── 8. GET DEPENDENCIES ──────────────────────────────────────────
-      - name: 📦 Get Flutter Dependencies
-        run: |
-          cd $PROJECT_DIR
-          flutter clean
+          cd app
           flutter pub get
 
-      # ─── 9. LINTING ────────────────────────────────────────────────────
-      - name: 🔍 Code Analysis
+      - name: Build APK
         run: |
-          cd $PROJECT_DIR
-          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | head -50 || echo "✅ No issues found"
+          cd app
+          flutter build apk --${{ inputs.build_type }}
 
-      # ─── 10. BUILD APK ──────────────────────────────────────────────────
-      - name: 🛠️ Build APK (${{ github.event.inputs.build_type }})
-        run: |
-          cd $PROJECT_DIR
-          
-          echo "🛠️ Building APK (${{ github.event.inputs.build_type }})..."
-          BUILD_START=$(date +%s)
-          
-          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
-            flutter build apk --debug 2>&1 | tee build.log
-          else
-            # Build release, kalau gagal karena signing, pakai debug signing
-            flutter build apk --release 2>&1 | tee build.log || {
-              echo "⚠️ Release build gagal, kemungkinan signing config di Gradle, mencoba pakai debug signing..."
-              flutter build apk --release --debug-keystore-path=android/app/debug-keystore.jks --debug-keystore-password=android --debug-keystore-key-password=android --debug-keystore-key-alias=release 2>&1 | tee build.log
-            }
-          fi
-          
-          BUILD_END=$(date +%s)
-          DURATION=$((BUILD_END - BUILD_START))
-          echo "⏱️ Build duration: ${DURATION}s"
-          
-          # Check result
-          if ls build/app/outputs/flutter-apk/*.apk 1> /dev/null 2>&1; then
-            echo "✅ Build Success!"
-            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
-          else
-            echo "❌ Build Failed!"
-            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
-            tail -100 build.log
-            exit 1
-          fi
-
-      # ─── 11. UPLOAD ARTIFACT ──────────────────────────────────────────
-      - name: 📤 Upload APK Artifact
-        if: env.BUILD_SUCCESS == 'true'
-        uses: actions/upload-artifact@v4
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
         with:
-          name: flutter-apk-${{ github.event.inputs.tag }}
-          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
-          retention-days: 7
-
-      # ─── 12. UPLOAD TO RELEASE ────────────────────────────────────────
-      - name: 📦 Upload to Release
-        if: env.BUILD_SUCCESS == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd $PROJECT_DIR
-          
-          APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -1)
-          APK_NAME=$(basename "$APK_FILE")
-          APK_SIZE=$(du -h "$APK_FILE" | cut -f1)
-          echo "📦 APK: $APK_NAME ($APK_SIZE)"
-          
-          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.tag }}" \
-            | jq -r '.id // empty')
-          
-          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            curl -L \
-              -X POST \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/vnd.android.package-archive" \
-              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$APK_NAME" \
-              --data-binary @"$APK_FILE"
-            
-            echo "✅ APK uploaded to release!"
-            
-            curl -L -X PATCH \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              -d '{"draft":false}' \
-              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
-            
-            echo "✅ Release published!"
-          else
-            echo "⚠️ Release tag ${{ github.event.inputs.tag }} not found. Skipping release upload."
-          fi
-
-      # ─── 13. FAILURE ──────────────────────────────────────────────────
-      - name: ❌ Build Failed
-        if: failure()
-        run: |
-          echo "💀 Build Gagal!"
-          if [ -f "$PROJECT_DIR/build.log" ]; then
-            echo "=== LAST 80 LINES OF BUILD LOG ==="
-            tail -80 "$PROJECT_DIR/build.log"
-          fi
+          name: app-release
+          path: app/build/app/outputs/flutter-apk/*.apk
