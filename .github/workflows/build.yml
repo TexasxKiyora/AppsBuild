@@ -1,4 +1,4 @@
-name: 🔥 Build Flutter APK (COMPATIBLE VERSION)
+name: 🔥 Build Flutter APK (COMPATIBLE - V3.19.6)
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 🔥 PAKE FLUTTER 3.19.6 - SUPPORT package_info_plus 9.0.1
+      # 🔥 PAKE FLUTTER 3.19.6 (SAMA KAYAK BOT ORANG)
       - name: 🐦 Setup Flutter (3.19.6)
         uses: subosito/flutter-action@v2.16.0
         with:
@@ -52,17 +52,13 @@ jobs:
           mkdir -p app && cd app
           echo "⬇️ Downloading from ${{ inputs.zip_url }}"
           
-          if curl -L --fail -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-               -H "Accept: application/octet-stream" \
-               -o project.zip "${{ inputs.zip_url }}"; then
-            if file project.zip | grep -q "Zip archive"; then
-              unzip -q project.zip && rm project.zip
-              echo "✅ Extract berhasil!"
-            else
-              echo "❌ BUKAN ZIP!" && exit 1
-            fi
+          curl -L --fail -o project.zip "${{ inputs.zip_url }}"
+          
+          if file project.zip | grep -q "Zip archive"; then
+            unzip -q project.zip && rm project.zip
+            echo "✅ Extract berhasil!"
           else
-            echo "❌ GAGAL DOWNLOAD!" && exit 1
+            echo "❌ BUKAN ZIP!" && exit 1
           fi
 
       - name: 📦 Dependencies & Build
