@@ -1,4 +1,4 @@
-name: Build Flutter APK
+name: 🔥 Build Flutter APK (X-FCOLS Edition)
 
 on:
   workflow_dispatch:
@@ -36,72 +36,46 @@ jobs:
           java-version: '17'
 
       - name: 🐦 Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@v2.16.0
         with:
-          flutter-version: '3.22.0'
+          flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: 📦 Setup Android SDK
+      - name: 📦 Setup Android SDK (Cara Cepat)
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      - name: 📥 Download Project dengan Error Handling
         run: |
-          export ANDROID_HOME=$HOME/android-sdk
-          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          cd $ANDROID_HOME/cmdline-tools
-
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O sdk.zip
-          unzip -q sdk.zip
-          rm sdk.zip
-
-          mkdir -p latest
-          mv cmdline-tools/* latest/ 2>/dev/null || true
-          rmdir cmdline-tools 2>/dev/null || true
-
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
-
-      - name: 📥 Download Project
-        run: |
-          mkdir -p app
-          cd app
-          # Cek apakah URL dari GitHub Release (browser_download_url)
-          if [[ "${{ inputs.zip_url }}" == *"github.com"* ]] && [[ "${{ inputs.zip_url }}" == *"/releases/download/"* ]]; then
-            echo "✅ Downloading from GitHub Release (browser URL)"
-            wget -q --show-progress -O project.zip "${{ inputs.zip_url }}"
+          mkdir -p app && cd app
+          echo "⬇️ Downloading from ${{ inputs.zip_url }}"
+          
+          if curl -L --fail -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/octet-stream" \
+               -o project.zip "${{ inputs.zip_url }}"; then
+            if file project.zip | grep -q "Zip archive"; then
+              unzip -q project.zip && rm project.zip
+              echo "✅ Extract berhasil!"
+            else
+              echo "❌ BUKAN ZIP! Isi file:" && head -c 200 project.zip
+              exit 1
+            fi
           else
-            echo "✅ Downloading from API with auth"
-            curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-                 -H "Accept: application/octet-stream" \
-                 -o project.zip "${{ inputs.zip_url }}"
+            echo "❌ GAGAL DOWNLOAD!" && exit 1
           fi
 
-          # Cek apakah file beneran ZIP
-          if file project.zip | grep -q "Zip archive"; then
-            echo "✅ File is valid ZIP"
-            unzip -q project.zip
-            rm project.zip
-          else
-            echo "❌ File is NOT a valid ZIP! Showing first 200 bytes:"
-            head -c 200 project.zip
-            exit 1
-          fi
-
-      - name: 📦 Get Dependencies
+      - name: 📦 Dependencies & Build
         run: |
           cd app
           flutter pub get
+          flutter build apk --${{ inputs.build_type }} \
+            --no-tree-shake-icons \
+            --dart-define=BUILD_TAG=${{ inputs.tag }}
 
-      - name: 🔨 Build APK
-        run: |
-          cd app
-          flutter build apk --${{ inputs.build_type }} --no-tree-shake-icons
-
-      - name: 📤 Upload Artifact
+      - name: 📤 Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-${{ inputs.build_type }}
+          name: app-${{ inputs.build_type }}-${{ inputs.tag }}
           path: app/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
