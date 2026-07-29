@@ -41,12 +41,12 @@ jobs:
           flutter-version: '3.24.0'
           channel: 'stable'
 
-      - name: 📦 Setup Android SDK (Cara Cepat)
+      - name: 📦 Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: 'platforms;android-34 build-tools;34.0.0'
 
-      - name: 📥 Download Project dengan Error Handling
+      - name: 📥 Download Project
         run: |
           mkdir -p app && cd app
           echo "⬇️ Downloading from ${{ inputs.zip_url }}"
