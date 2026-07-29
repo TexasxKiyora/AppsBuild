@@ -1,10 +1,10 @@
-name: Build Web2APK
+name: 🌐 Web2APK Build
 
 on:
   workflow_dispatch:
     inputs:
       web_url:
-        description: 'Website URL'
+        description: 'URL Website'
         required: true
         type: string
       app_name:
@@ -12,175 +12,37 @@ on:
         required: true
         type: string
       icon_url:
-        description: 'URL Icon (PNG/JPG)'
+        description: 'URL Icon'
         required: true
         type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
-      - name: 📥 Checkout
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: 🛠 Setup Java
-        uses: actions/setup-java@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: 🐦 Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
-
-      - name: 📦 Setup Android SDK
+          node-version: '18'
+      
+      - name: Install PWA2APK
+        run: npm install -g pwa2apk
+        
+      - name: Build APK
         run: |
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
-          mkdir -p $HOME/android-sdk/cmdline-tools
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O sdk.zip
-          unzip -q sdk.zip -d $HOME/android-sdk/cmdline-tools
-          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest || true
-          rm sdk.zip
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null 2>&1
-
-      - name: 🧩 Create Flutter WebView Project
-        run: |
-          flutter create --org com.web2apk --project-name webview_app webview_app
-          cd webview_app
-          flutter pub add webview_flutter
-          flutter pub add webview_flutter_android
-          flutter pub add webview_flutter_wkwebview
-          flutter pub add http
-
-      - name: 📝 Generate WebView Code
-        run: |
-          cd webview_app
-          cat > lib/main.dart << 'EOF'
-          import 'package:flutter/material.dart';
-          import 'package:webview_flutter/webview_flutter.dart';
-          import 'package:webview_flutter_android/webview_flutter_android.dart';
-          import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
-          import 'package:flutter/services.dart';
-          import 'package:http/http.dart' as http;
-          import 'dart:convert';
-          import 'dart:io';
-
-          void main() => runApp(const MyApp());
-
-          class MyApp extends StatelessWidget {
-            const MyApp({super.key});
-
-            @override
-            Widget build(BuildContext context) {
-              return MaterialApp(
-                title: '${{ inputs.app_name }}',
-                theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
-                debugShowCheckedModeBanner: false,
-                home: const WebViewApp(),
-              );
-            }
-          }
-
-          class WebViewApp extends StatefulWidget {
-            const WebViewApp({super.key});
-
-            @override
-            State<WebViewApp> createState() => _WebViewAppState();
-          }
-
-          class _WebViewAppState extends State<WebViewApp> {
-            late final WebViewController _controller;
-            String _title = '${{ inputs.app_name }}';
-            bool _isLoading = true;
-
-            @override
-            void initState() {
-              super.initState();
-
-              final PlatformWebViewControllerCreationParams params;
-              if (Platform.isAndroid) {
-                params = const AndroidWebViewControllerCreationParams();
-              } else {
-                params = WebKitWebViewControllerCreationParams();
-              }
-
-              _controller = WebViewController.fromPlatformCreationParams(params)
-                ..setJavaScriptMode(JavaScriptMode.unrestricted)
-                ..setBackgroundColor(const Color(0x00000000))
-                ..setNavigationDelegate(
-                  NavigationDelegate(
-                    onProgress: (progress) {
-                      if (progress == 100) {
-                        setState(() => _isLoading = false);
-                      }
-                    },
-                    onPageFinished: (url) {
-                      setState(() => _isLoading = false);
-                    },
-                    onWebResourceError: (error) {
-                      setState(() => _isLoading = false);
-                    },
-                  ),
-                )
-                ..loadRequest(Uri.parse('${{ inputs.web_url }}'));
-
-              if (_controller.platform is AndroidWebViewController) {
-                AndroidWebViewController.enableDebugging(true);
-              }
-            }
-
-            @override
-            Widget build(BuildContext context) {
-              return Scaffold(
-                appBar: AppBar(
-                  title: Text(_title),
-                  backgroundColor: Colors.blue,
-                  foregroundColor: Colors.white,
-                  centerTitle: true,
-                  elevation: 0,
-                ),
-                body: Stack(
-                  children: [
-                    WebViewWidget(controller: _controller),
-                    if (_isLoading)
-                      const Center(
-                        child: CircularProgressIndicator(
-                          color: Colors.blue,
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            }
-          }
-          EOF
-
-      - name: 🖼️ Download Icon
-        run: |
-          cd webview_app
-          mkdir -p assets
-          wget -q -O assets/icon.png "${{ inputs.icon_url }}"
-
-      - name: 📦 Get Flutter Dependencies
-        run: |
-          cd webview_app
-          flutter pub get
-
-      - name: 🔨 Build APK
-        run: |
-          cd webview_app
-          flutter build apk --release --no-tree-shake-icons
-
-      - name: 📤 Upload Artifact
+          pwa2apk "${{ inputs.web_url }}" \
+            --name "${{ inputs.app_name }}" \
+            --icon "${{ inputs.icon_url }}" \
+            --output ./app.apk
+      
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.app_name }}
-          path: webview_app/build/app/outputs/flutter-apk/*.apk
+          name: web2apk-build-${{ inputs.app_name }}
+          path: ./app.apk
           retention-days: 7
