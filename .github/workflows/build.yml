@@ -1,0 +1,236 @@
+name: Flutter Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'URL ZIP project Flutter'
+        required: true
+        type: string
+      tag:
+        description: 'Tag build'
+        required: true
+        type: string
+      build_type:
+        description: 'Tipe build (debug/release)'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    
+    steps:
+      # ─── 1. SETUP ENVIRONMENT ──────────────────────────────────────────
+      - name: 📦 Setup Build Environment
+        run: |
+          echo "🚀 Starting Flutter Build..."
+          echo "Build Type: ${{ github.event.inputs.build_type }}"
+          echo "Tag: ${{ github.event.inputs.tag }}"
+          echo "ZIP URL: ${{ github.event.inputs.zip_url }}"
+          
+          # Update system
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq git curl unzip zip wget jq
+          
+          # Setup Flutter
+          git clone --depth 1 -b stable https://github.com/flutter/flutter.git /opt/flutter
+          echo "$PATH" >> $GITHUB_PATH
+          echo "/opt/flutter/bin" >> $GITHUB_PATH
+          echo "FLUTTER_ROOT=/opt/flutter" >> $GITHUB_ENV
+          echo "PATH=/opt/flutter/bin:$PATH" >> $GITHUB_ENV
+          
+          # Android SDK dependencies
+          sudo apt-get install -y -qq lib32stdc++6 lib32z1 libgl1-mesa-dev
+          
+          # Setup Android SDK
+          mkdir -p /opt/android-sdk
+          cd /opt/android-sdk
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q commandlinetools-linux-9477386_latest.zip
+          rm commandlinetools-linux-9477386_latest.zip
+          
+          echo "ANDROID_HOME=/opt/android-sdk" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=/opt/android-sdk" >> $GITHUB_ENV
+          echo "/opt/android-sdk/cmdline-tools/bin" >> $GITHUB_PATH
+          echo "/opt/android-sdk/platform-tools" >> $GITHUB_PATH
+          
+          # Accept licenses
+          yes | /opt/android-sdk/cmdline-tools/bin/sdkmanager --licenses > /dev/null 2>&1 || true
+          /opt/android-sdk/cmdline-tools/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1
+          
+          # Setup Java
+          sudo apt-get install -y -qq openjdk-17-jdk
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+
+      # ─── 2. DOWNLOAD PROJECT ──────────────────────────────────────────
+      - name: 📥 Download Project ZIP
+        run: |
+          echo "📥 Downloading project from: ${{ github.event.inputs.zip_url }}"
+          curl -L "${{ github.event.inputs.zip_url }}" -o /tmp/project.zip
+          
+          if [ ! -f /tmp/project.zip ] || [ ! -s /tmp/project.zip ]; then
+            echo "❌ Gagal download project ZIP!"
+            exit 1
+          fi
+          
+          echo "✅ Project downloaded successfully!"
+          ls -lh /tmp/project.zip
+          
+          unzip -q /tmp/project.zip -d /tmp/project
+          rm /tmp/project.zip
+          
+          # Cari folder yang mengandung pubspec.yaml
+          PROJECT_DIR=$(find /tmp/project -name "pubspec.yaml" -type f -printf "%h\n" | head -1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "❌ pubspec.yaml tidak ditemukan!"
+            echo "[RESULT_ANALYZE]"
+            echo "ERROR: Tidak ada pubspec.yaml di dalam ZIP."
+            echo "[END_RESULT_ANALYZE]"
+            exit 1
+          fi
+          
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "✅ Project directory: $PROJECT_DIR"
+
+      # ─── 3. LINTING & ANALISIS KODE ───────────────────────────────────
+      - name: 🔍 Code Analysis & Linting
+        id: analyze
+        run: |
+          echo "🔍 Running Flutter analyze..."
+          cd $PROJECT_DIR
+          
+          # Flutter doctor
+          flutter doctor -v
+          
+          # Get packages
+          flutter pub get
+          
+          # Run analyze
+          ANALYZE_LOG=$(mktemp)
+          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | tee $ANALYZE_LOG || true
+          
+          echo "[RESULT_ANALYZE]"
+          cat $ANALYZE_LOG | grep -E "(error|warning|info)" | head -50
+          echo "[END_RESULT_ANALYZE]"
+          
+          # Cek pubspec.yaml
+          if grep -q "flutter:" pubspec.yaml; then
+            echo "✅ Flutter SDK found!"
+          else
+            echo "⚠️ Flutter SDK tidak terdeteksi di pubspec.yaml!"
+          fi
+
+      # ─── 4. BUILD APK ─────────────────────────────────────────────────
+      - name: 🛠️ Build APK (${{ github.event.inputs.build_type }})
+        id: build
+        run: |
+          cd $PROJECT_DIR
+          
+          echo "🛠️ Building APK (${{ github.event.inputs.build_type }})..."
+          
+          BUILD_START=$(date +%s)
+          
+          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+            flutter build apk --debug --split-per-abi 2>&1 | tee build.log || BUILD_EXIT=1
+          else
+            flutter build apk --release --split-per-abi 2>&1 | tee build.log || BUILD_EXIT=1
+          fi
+          
+          BUILD_END=$(date +%s)
+          DURATION=$((BUILD_END - BUILD_START))
+          echo "⏱️ Build duration: ${DURATION}s"
+          
+          # Cek hasil build
+          if [ -f build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ] || [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ] || [ -f build/app/outputs/flutter-apk/app-debug.apk ]; then
+            echo "✅ Build Success!"
+            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+          else
+            echo "❌ Build Failed!"
+            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+            
+            # Tampilkan error dari log
+            echo "[RESULT_ANALYZE]"
+            tail -100 build.log | grep -E "(error|fail)" || echo "No specific error found"
+            echo "[END_RESULT_ANALYZE]"
+            exit 1
+          fi
+
+      # ─── 5. UPLOAD ARTIFACT ──────────────────────────────────────────
+      - name: 📤 Upload APK Artifact
+        if: env.BUILD_SUCCESS == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-apk
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+          retention-days: 7
+
+      # ─── 6. KIRIM KE RELEASE ──────────────────────────────────────────
+      - name: 📦 Upload to Release
+        if: env.BUILD_SUCCESS == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd $PROJECT_DIR
+          
+          # Cari APK
+          APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "❌ APK file not found!"
+            exit 1
+          fi
+          
+          APK_NAME=$(basename "$APK_FILE")
+          APK_SIZE=$(du -h "$APK_FILE" | cut -f1)
+          echo "📦 APK: $APK_NAME ($APK_SIZE)"
+          
+          # Cari release ID dari tag
+          RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.tag }}" \
+            | jq -r '.id // empty')
+          
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            # Upload APK ke release
+            curl -L \
+              -X POST \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/vnd.android.package-archive" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$APK_NAME" \
+              --data-binary @"$APK_FILE"
+            
+            echo "✅ APK uploaded to release!"
+            
+            # Publish release
+            curl -L -X PATCH \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d '{"draft":false}' \
+              "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+            
+            echo "✅ Release published!"
+          else
+            echo "⚠️ Release not found, saving as artifact only"
+          fi
+
+      # ─── 7. SUCCESS NOTIFICATION ─────────────────────────────────────
+      - name: ✅ Build Success
+        if: env.BUILD_SUCCESS == 'true'
+        run: |
+          echo "🎉 Build Completed Successfully!"
+          echo "Tag: ${{ github.event.inputs.tag }}"
+          echo "Type: ${{ github.event.inputs.build_type }}"
+          echo "Time: $(date)"
+
+      # ─── 8. FAILURE HANDLING ─────────────────────────────────────────
+      - name: ❌ Build Failed
+        if: failure()
+        run: |
+          echo "💀 Build Gagal!"
+          echo "Tag: ${{ github.event.inputs.tag }}"
+          echo "Cek log di atas untuk detail error."
