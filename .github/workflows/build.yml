@@ -65,6 +65,30 @@ jobs:
             echo "❌ GAGAL DOWNLOAD!" && exit 1
           fi
 
+      # 🔥 FIX: AUTO-DOWNGRADE package_info_plus
+      - name: 🔧 Fix package_info_plus compatibility
+        run: |
+          cd app
+          if [ -f "pubspec.yaml" ]; then
+            echo "📝 Checking pubspec.yaml..."
+            if grep -q "package_info_plus:" pubspec.yaml; then
+              echo "🔧 Found package_info_plus, downgrading to 8.0.0..."
+              sed -i 's/package_info_plus:.*/package_info_plus: ^8.0.0/' pubspec.yaml
+              echo "✅ package_info_plus downgraded to 8.0.0"
+            fi
+            
+            # TAMBAHKAN JUGA FIX UNTUK PLUGIN LAIN YANG SERING ERROR
+            if grep -q "share_plus:" pubspec.yaml; then
+              sed -i 's/share_plus:.*/share_plus: ^7.0.0/' pubspec.yaml
+              echo "✅ share_plus downgraded to 7.0.0"
+            fi
+            
+            if grep -q "device_info_plus:" pubspec.yaml; then
+              sed -i 's/device_info_plus:.*/device_info_plus: ^9.0.0/' pubspec.yaml
+              echo "✅ device_info_plus downgraded to 9.0.0"
+            fi
+          fi
+
       - name: 📦 Dependencies & Build
         run: |
           cd app
