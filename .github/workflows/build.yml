@@ -44,6 +44,10 @@ jobs:
           git clone --depth 1 -b stable https://github.com/flutter/flutter.git /opt/flutter
           echo "/opt/flutter/bin" >> $GITHUB_PATH
           echo "FLUTTER_ROOT=/opt/flutter" >> $GITHUB_ENV
+          
+          # Pre-cache Flutter SDK
+          export PATH="/opt/flutter/bin:$PATH"
+          flutter precache
 
       # ─── 4. ANDROID SDK (PAKE CACHE) ────────────────────────────────
       - name: 🤖 Cache Android SDK
@@ -51,7 +55,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: /opt/android-sdk
-          key: android-sdk-${{ runner.os }}-34
+          key: android-sdk-${{ runner.os }}-21
           restore-keys: android-sdk-${{ runner.os }}-
 
       - name: 🤖 Install Android SDK
@@ -77,7 +81,7 @@ jobs:
           echo "ANDROID_SDK_ROOT=/opt/android-sdk" >> $GITHUB_ENV
           echo "/opt/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      - name: 🤖 Setup Android SDK
+      - name: 🤖 Setup Android SDK (Min SDK 21)
         run: |
           export ANDROID_HOME=/opt/android-sdk
           export PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin
@@ -85,8 +89,12 @@ jobs:
           # License
           echo "y" | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses 2>&1 | grep -v "Warning" || true
           
-          # Install platforms
-          /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" 2>&1 | grep -v "Warning" || true
+          # Install platforms (Min SDK 21 = Android 5.0)
+          # platform;android-21 = Android 5.0 Lollipop
+          /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-21" "build-tools;34.0.0" 2>&1 | grep -v "Warning" || true
+          
+          # Tambahan platform 33 & 34 untuk kompatibilitas
+          /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-33" "platforms;android-34" 2>&1 | grep -v "Warning" || true
 
       # ─── 5. DOWNLOAD PROJECT ──────────────────────────────────────────
       - name: 📥 Download Project
@@ -107,13 +115,37 @@ jobs:
           PROJECT_DIR=$(find /tmp/project -name "pubspec.yaml" -type f -printf "%h\n" | head -1)
           if [ -z "$PROJECT_DIR" ]; then
             echo "❌ pubspec.yaml tidak ditemukan!"
+            echo "[RESULT_ANALYZE]"
+            echo "ERROR: Tidak ada pubspec.yaml di dalam ZIP."
+            echo "[END_RESULT_ANALYZE]"
             exit 1
           fi
           
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "✅ Project directory: $PROJECT_DIR"
 
-      # ─── 6. BUILD ─────────────────────────────────────────────────────
-      - name: 🛠️ Build APK
+      # ─── 6. UPDATE PUBSPEC.YAML (Min SDK 21) ─────────────────────────
+      - name: 📝 Update Min SDK
+        run: |
+          cd $PROJECT_DIR
+          
+          # Cek pubspec.yaml
+          if grep -q "minSdkVersion" android/app/build.gradle; then
+            echo "✅ minSdkVersion sudah ada di build.gradle"
+          else
+            echo "⚠️ Menambahkan minSdkVersion 21 ke build.gradle..."
+            sed -i '/defaultConfig {/a \        minSdkVersion 21' android/app/build.gradle
+          fi
+          
+          # Cek juga di app/build.gradle.kts
+          if [ -f android/app/build.gradle.kts ]; then
+            sed -i '/defaultConfig {/a \        minSdkVersion(21)' android/app/build.gradle.kts
+          fi
+          
+          cat android/app/build.gradle | grep -A5 "defaultConfig"
+
+      # ─── 7. GET DEPENDENCIES ──────────────────────────────────────────
+      - name: 📦 Get Flutter Dependencies
         run: |
           export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:$PATH"
           export FLUTTER_ROOT=/opt/flutter
@@ -123,54 +155,135 @@ jobs:
           cd $PROJECT_DIR
           flutter clean
           flutter pub get
+
+      # ─── 8. LINTING ────────────────────────────────────────────────────
+      - name: 🔍 Code Analysis
+        id: analyze
+        run: |
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:$PATH"
+          export FLUTTER_ROOT=/opt/flutter
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_SDK_ROOT=/opt/android-sdk
+          
+          cd $PROJECT_DIR
+          
+          echo "[RESULT_ANALYZE]"
+          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | head -50 || echo "✅ No issues found"
+          echo "[END_RESULT_ANALYZE]"
+
+      # ─── 9. BUILD APK ──────────────────────────────────────────────────
+      - name: 🛠️ Build APK (${{ github.event.inputs.build_type }})
+        id: build
+        run: |
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:$PATH"
+          export FLUTTER_ROOT=/opt/flutter
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_SDK_ROOT=/opt/android-sdk
+          
+          cd $PROJECT_DIR
+          
+          echo "🛠️ Building APK (${{ github.event.inputs.build_type }})..."
+          echo "📱 Min SDK: 21 (Android 5.0 Lollipop)"
+          
+          BUILD_START=$(date +%s)
           
           if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
-            flutter build apk --debug 2>&1 | tee build.log
+            flutter build apk --debug 2>&1 | tee build.log || BUILD_EXIT=1
           else
-            flutter build apk --release 2>&1 | tee build.log
+            flutter build apk --release 2>&1 | tee build.log || BUILD_EXIT=1
           fi
           
-          if [ -f build/app/outputs/flutter-apk/*.apk ]; then
-            echo "✅ Success!"
+          BUILD_END=$(date +%s)
+          DURATION=$((BUILD_END - BUILD_START))
+          echo "⏱️ Build duration: ${DURATION}s"
+          
+          # Check result
+          if [ -f build/app/outputs/flutter-apk/app-release.apk ] || \
+             [ -f build/app/outputs/flutter-apk/app-debug.apk ] || \
+             [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ] || \
+             [ -f build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ]; then
+            echo "✅ Build Success!"
             echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
           else
-            echo "❌ Failed!"
-            tail -50 build.log
+            echo "❌ Build Failed!"
+            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+            
+            echo "[RESULT_ANALYZE]"
+            tail -100 build.log | grep -E "(error|fail|FAILURE)" || echo "No specific error found"
+            echo "[END_RESULT_ANALYZE]"
             exit 1
           fi
 
-      # ─── 7. UPLOAD ────────────────────────────────────────────────────
-      - name: 📤 Upload APK
+      # ─── 10. UPLOAD ARTIFACT ──────────────────────────────────────────
+      - name: 📤 Upload APK Artifact
         if: env.BUILD_SUCCESS == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: flutter-apk
-          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
+      # ─── 11. UPLOAD TO RELEASE ────────────────────────────────────────
       - name: 📦 Upload to Release
         if: env.BUILD_SUCCESS == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd $PROJECT_DIR
+          
           APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "❌ APK file not found!"
+            exit 1
+          fi
+          
           APK_NAME=$(basename "$APK_FILE")
+          APK_SIZE=$(du -h "$APK_FILE" | cut -f1)
+          echo "📦 APK: $APK_NAME ($APK_SIZE)"
           
           RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.tag }}" \
             | jq -r '.id // empty')
           
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            curl -L -X POST \
+            curl -L \
+              -X POST \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/vnd.android.package-archive" \
               "https://uploads.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID/assets?name=$APK_NAME" \
               --data-binary @"$APK_FILE"
+            
+            echo "✅ APK uploaded to release!"
             
             curl -L -X PATCH \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d '{"draft":false}' \
               "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
+            
+            echo "✅ Release published!"
+          else
+            echo "⚠️ Release not found, saving as artifact only"
+          fi
+
+      # ─── 12. SUCCESS ──────────────────────────────────────────────────
+      - name: ✅ Build Success
+        if: env.BUILD_SUCCESS == 'true'
+        run: |
+          echo "🎉 Build Completed Successfully!"
+          echo "Tag: ${{ github.event.inputs.tag }}"
+          echo "Type: ${{ github.event.inputs.build_type }}"
+          echo "Min SDK: 21 (Android 5.0 Lollipop)"
+
+      # ─── 13. FAILURE ──────────────────────────────────────────────────
+      - name: ❌ Build Failed
+        if: failure()
+        run: |
+          echo "💀 Build Gagal!"
+          echo "Tag: ${{ github.event.inputs.tag }}"
+          
+          if [ -f "$PROJECT_DIR/build.log" ]; then
+            echo "=== LAST 50 LINES OF BUILD LOG ==="
+            tail -50 "$PROJECT_DIR/build.log"
           fi
