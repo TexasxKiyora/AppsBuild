@@ -1,10 +1,10 @@
-name: Web to APK Build
+name: Build Web2APK
 
 on:
   workflow_dispatch:
     inputs:
       web_url:
-        description: 'URL Website'
+        description: 'Website URL'
         required: true
         type: string
       app_name:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       icon_url:
-        description: 'URL Icon (PNG)'
+        description: 'URL Icon (PNG/JPG)'
         required: true
         type: string
 
@@ -20,114 +20,167 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    
-    steps:
-      # ─── 1. SETUP ────────────────────────────────────────────────────
-      - name: 📦 Setup PWA2APK Environment
-        run: |
-          echo "🌐 Building Web to APK..."
-          echo "URL: ${{ github.event.inputs.web_url }}"
-          echo "App Name: ${{ github.event.inputs.app_name }}"
-          
-          # Update system
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq git curl wget unzip zip jq
-          
-          # Install Node.js
-          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-          sudo apt-get install -y -qq nodejs
-          
-          # Install pwa2apk
-          npm install -g pwa2apk-cli
 
-      # ─── 2. DOWNLOAD ICON ────────────────────────────────────────────
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🛠 Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 🐦 Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+
+      - name: 📦 Setup Android SDK
+        run: |
+          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O sdk.zip
+          unzip -q sdk.zip -d $HOME/android-sdk/cmdline-tools
+          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest || true
+          rm sdk.zip
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null 2>&1
+
+      - name: 🧩 Create Flutter WebView Project
+        run: |
+          flutter create --org com.web2apk --project-name webview_app webview_app
+          cd webview_app
+          flutter pub add webview_flutter
+          flutter pub add webview_flutter_android
+          flutter pub add webview_flutter_wkwebview
+          flutter pub add http
+
+      - name: 📝 Generate WebView Code
+        run: |
+          cd webview_app
+          cat > lib/main.dart << 'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+          import 'package:webview_flutter_android/webview_flutter_android.dart';
+          import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
+          import 'package:flutter/services.dart';
+          import 'package:http/http.dart' as http;
+          import 'dart:convert';
+          import 'dart:io';
+
+          void main() => runApp(const MyApp());
+
+          class MyApp extends StatelessWidget {
+            const MyApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: '${{ inputs.app_name }}',
+                theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
+                debugShowCheckedModeBanner: false,
+                home: const WebViewApp(),
+              );
+            }
+          }
+
+          class WebViewApp extends StatefulWidget {
+            const WebViewApp({super.key});
+
+            @override
+            State<WebViewApp> createState() => _WebViewAppState();
+          }
+
+          class _WebViewAppState extends State<WebViewApp> {
+            late final WebViewController _controller;
+            String _title = '${{ inputs.app_name }}';
+            bool _isLoading = true;
+
+            @override
+            void initState() {
+              super.initState();
+
+              final PlatformWebViewControllerCreationParams params;
+              if (Platform.isAndroid) {
+                params = const AndroidWebViewControllerCreationParams();
+              } else {
+                params = WebKitWebViewControllerCreationParams();
+              }
+
+              _controller = WebViewController.fromPlatformCreationParams(params)
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..setBackgroundColor(const Color(0x00000000))
+                ..setNavigationDelegate(
+                  NavigationDelegate(
+                    onProgress: (progress) {
+                      if (progress == 100) {
+                        setState(() => _isLoading = false);
+                      }
+                    },
+                    onPageFinished: (url) {
+                      setState(() => _isLoading = false);
+                    },
+                    onWebResourceError: (error) {
+                      setState(() => _isLoading = false);
+                    },
+                  ),
+                )
+                ..loadRequest(Uri.parse('${{ inputs.web_url }}'));
+
+              if (_controller.platform is AndroidWebViewController) {
+                AndroidWebViewController.enableDebugging(true);
+              }
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(
+                  title: Text(_title),
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                  centerTitle: true,
+                  elevation: 0,
+                ),
+                body: Stack(
+                  children: [
+                    WebViewWidget(controller: _controller),
+                    if (_isLoading)
+                      const Center(
+                        child: CircularProgressIndicator(
+                          color: Colors.blue,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }
+          }
+          EOF
+
       - name: 🖼️ Download Icon
         run: |
-          echo "🖼️ Downloading icon..."
-          curl -L "${{ github.event.inputs.icon_url }}" -o /tmp/icon.png
-          
-          if [ ! -f /tmp/icon.png ] || [ ! -s /tmp/icon.png ]; then
-            echo "❌ Gagal download icon!"
-            # Use default icon
-            echo "iVBORw0KGgoAAAANSUhEUgAA..." | base64 -d > /tmp/icon.png
-          fi
-          
-          echo "✅ Icon downloaded"
-          file /tmp/icon.png
+          cd webview_app
+          mkdir -p assets
+          wget -q -O assets/icon.png "${{ inputs.icon_url }}"
 
-      # ─── 3. BUILD APK ────────────────────────────────────────────────
-      - name: 🛠️ Build APK from Web
+      - name: 📦 Get Flutter Dependencies
         run: |
-          echo "🛠️ Building APK from ${{ github.event.inputs.web_url }}..."
-          
-          mkdir -p /tmp/build
-          cd /tmp/build
-          
-          # PWA2APK command
-          pwa2apk "${{ github.event.inputs.web_url }}" \
-            --name "${{ github.event.inputs.app_name }}" \
-            --icon /tmp/icon.png \
-            --output ./app.apk \
-            2>&1 | tee build.log
-          
-          # Cek hasil
-          if [ -f ./app.apk ] && [ -s ./app.apk ]; then
-            echo "✅ Build Success!"
-            echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
-            APK_SIZE=$(du -h ./app.apk | cut -f1)
-            echo "📦 APK Size: $APK_SIZE"
-          else
-            echo "❌ Build Failed!"
-            echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
-            tail -50 build.log
-            exit 1
-          fi
+          cd webview_app
+          flutter pub get
 
-      # ─── 4. UPLOAD ARTIFACT ──────────────────────────────────────────
-      - name: 📤 Upload APK Artifact
-        if: env.BUILD_SUCCESS == 'true'
+      - name: 🔨 Build APK
+        run: |
+          cd webview_app
+          flutter build apk --release --no-tree-shake-icons
+
+      - name: 📤 Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web2apk
-          path: /tmp/build/app.apk
+          name: ${{ inputs.app_name }}
+          path: webview_app/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
-
-      # ─── 5. SAVE TO RELEASE ──────────────────────────────────────────
-      - name: 📦 Upload to Release
-        if: env.BUILD_SUCCESS == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Generate tag
-          TAG="web2apk-$(date +%s)"
-          
-          # Create release
-          RELEASE_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"Web2APK $TAG\",\"draft\":false,\"prerelease\":true}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases")
-          
-          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id // empty')
-          UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url // empty')
-          
-          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            # Upload APK
-            curl -L -X POST \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/vnd.android.package-archive" \
-              "${UPLOAD_URL%{?*}?name=${{ github.event.inputs.app_name }}.apk" \
-              --data-binary @/tmp/build/app.apk
-            
-            echo "✅ APK uploaded to release!"
-          else
-            echo "⚠️ Failed to create release"
-          fi
-
-      # ─── 6. SUCCESS ──────────────────────────────────────────────────
-      - name: ✅ Build Success
-        if: env.BUILD_SUCCESS == 'true'
-        run: |
-          echo "🎉 Web2APK Build Completed!"
-          echo "App: ${{ github.event.inputs.app_name }}"
-          echo "URL: ${{ github.event.inputs.web_url }}"
