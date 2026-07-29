@@ -49,10 +49,14 @@ jobs:
           mkdir -p $HOME/android-sdk/cmdline-tools
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O sdk.zip
           unzip -q sdk.zip -d $HOME/android-sdk/cmdline-tools
-          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest || true
-          rm sdk.zip
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null 2>&1
+          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest 2>/dev/null || true
+          if [ ! -d "$HOME/android-sdk/cmdline-tools/latest" ]; then
+            mkdir -p $HOME/android-sdk/cmdline-tools/latest
+            mv $HOME/android-sdk/cmdline-tools/* $HOME/android-sdk/cmdline-tools/latest/ 2>/dev/null || true
+          fi
+          rm -f sdk.zip
+          yes | timeout 60 sdkmanager --licenses || true
+          timeout 120 sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools" || true
 
       - name: 📥 Download Project
         run: |
