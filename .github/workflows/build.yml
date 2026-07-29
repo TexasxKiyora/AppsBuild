@@ -33,56 +33,84 @@ jobs:
           echo "Build Type: ${{ github.event.inputs.build_type }}"
           echo "Tag: ${{ github.event.inputs.tag }}"
           
-          # Install basic dependencies
+          # Update system
           sudo apt-get update -qq
           sudo apt-get install -y -qq git curl unzip zip wget jq
-          
-          # ─── INSTALL JDK 17 ──────────────────────────────────────────
+
+      # ─── 2. INSTALL JDK 17 ────────────────────────────────────────────
+      - name: ☕ Install JDK 17
+        run: |
           sudo apt-get install -y -qq openjdk-17-jdk
           echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
           echo "/usr/lib/jvm/java-17-openjdk-amd64/bin" >> $GITHUB_PATH
-          
-          # ─── INSTALL FLUTTER ──────────────────────────────────────────
+          java -version
+
+      # ─── 3. INSTALL FLUTTER ────────────────────────────────────────────
+      - name: 📱 Install Flutter
+        run: |
+          # Clone Flutter
           git clone --depth 1 -b stable https://github.com/flutter/flutter.git /opt/flutter
-          echo "$PATH" >> $GITHUB_PATH
+          
+          # Add to PATH
           echo "/opt/flutter/bin" >> $GITHUB_PATH
           echo "FLUTTER_ROOT=/opt/flutter" >> $GITHUB_ENV
-          echo "PATH=/opt/flutter/bin:$PATH" >> $GITHUB_ENV
           
-          # ─── INSTALL ANDROID SDK ──────────────────────────────────────
+          # Verify
+          export PATH="/opt/flutter/bin:$PATH"
+          flutter doctor -v || true
+
+      # ─── 4. INSTALL ANDROID SDK ──────────────────────────────────────
+      - name: 🤖 Install Android SDK
+        run: |
+          # Install Android SDK
           mkdir -p /opt/android-sdk
           cd /opt/android-sdk
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q commandlinetools-linux-11076708_latest.zip
           rm commandlinetools-linux-11076708_latest.zip
-          mv cmdline-tools latest
           mkdir -p cmdline-tools
+          mv cmdline-tools latest
           mv latest cmdline-tools/
           
+          # Set environment
           echo "ANDROID_HOME=/opt/android-sdk" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=/opt/android-sdk" >> $GITHUB_ENV
           echo "/opt/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "/opt/android-sdk/platform-tools" >> $GITHUB_PATH
           
-          # ─── ACCEPT LICENSES & INSTALL PLATFORMS ─────────────────────
+          # Accept licenses
           export ANDROID_HOME=/opt/android-sdk
           export PATH=$PATH:/opt/android-sdk/cmdline-tools/latest/bin
           
           yes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1 || true
           
+          # Install platforms
           /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1
           /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-33" > /dev/null 2>&1 || true
-          
-          # ─── VERIFY ────────────────────────────────────────────────────
-          flutter doctor -v
 
-      # ─── 2. DOWNLOAD PROJECT ──────────────────────────────────────────
+      # ─── 5. VERIFY ENVIRONMENT ─────────────────────────────────────────
+      - name: 🔍 Verify Environment
+        run: |
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH"
+          export FLUTTER_ROOT=/opt/flutter
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_SDK_ROOT=/opt/android-sdk
+          
+          echo "=== JAVA ==="
+          java -version
+          echo "=== FLUTTER ==="
+          flutter doctor -v || true
+          echo "=== PATH ==="
+          echo $PATH
+
+      # ─── 6. DOWNLOAD PROJECT ──────────────────────────────────────────
       - name: 📥 Download Project ZIP
         id: download
         run: |
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH"
+          
           echo "📥 Downloading project from: ${{ github.event.inputs.zip_url }}"
           
-          # Download with retry
           for i in {1..3}; do
             curl -L "${{ github.event.inputs.zip_url }}" -o /tmp/project.zip && break
             echo "Retry $i..."
@@ -106,51 +134,55 @@ jobs:
             echo "❌ pubspec.yaml tidak ditemukan!"
             echo "[RESULT_ANALYZE]"
             echo "ERROR: Tidak ada pubspec.yaml di dalam ZIP."
-            echo "Pastikan ZIP berisi project Flutter dengan pubspec.yaml di root atau subfolder."
             echo "[END_RESULT_ANALYZE]"
             exit 1
           fi
           
           echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
           echo "✅ Project directory: $PROJECT_DIR"
-          
-          # Tampilkan struktur
           ls -la "$PROJECT_DIR"
 
-      # ─── 3. LINTING & ANALISIS KODE ───────────────────────────────────
-      - name: 🔍 Code Analysis & Linting
+      # ─── 7. GET DEPENDENCIES ──────────────────────────────────────────
+      - name: 📦 Get Flutter Dependencies
+        run: |
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH"
+          export FLUTTER_ROOT=/opt/flutter
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_SDK_ROOT=/opt/android-sdk
+          
+          cd $PROJECT_DIR
+          flutter clean
+          flutter pub get
+
+      # ─── 8. LINTING & ANALISIS ────────────────────────────────────────
+      - name: 🔍 Code Analysis
         id: analyze
         run: |
-          echo "🔍 Running Flutter analyze..."
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH"
+          export FLUTTER_ROOT=/opt/flutter
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_SDK_ROOT=/opt/android-sdk
+          
           cd $PROJECT_DIR
           
-          # Flutter doctor
-          flutter doctor -v
-          
-          # Get packages
-          flutter pub get
-          
-          # Run analyze
-          ANALYZE_LOG=$(mktemp)
-          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | tee $ANALYZE_LOG || true
-          
           echo "[RESULT_ANALYZE]"
-          cat $ANALYZE_LOG | grep -E "(error|warning|info)" | head -50 || echo "✅ No issues found"
+          flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings 2>&1 | head -50 || echo "✅ No issues found"
           echo "[END_RESULT_ANALYZE]"
 
-      # ─── 4. BUILD APK ─────────────────────────────────────────────────
+      # ─── 9. BUILD APK ──────────────────────────────────────────────────
       - name: 🛠️ Build APK (${{ github.event.inputs.build_type }})
         id: build
         run: |
+          export PATH="/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH"
+          export FLUTTER_ROOT=/opt/flutter
+          export ANDROID_HOME=/opt/android-sdk
+          export ANDROID_SDK_ROOT=/opt/android-sdk
+          
           cd $PROJECT_DIR
           
           echo "🛠️ Building APK (${{ github.event.inputs.build_type }})..."
           
           BUILD_START=$(date +%s)
-          
-          # Clean first
-          flutter clean
-          flutter pub get
           
           if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
             flutter build apk --debug 2>&1 | tee build.log || BUILD_EXIT=1
@@ -162,7 +194,7 @@ jobs:
           DURATION=$((BUILD_END - BUILD_START))
           echo "⏱️ Build duration: ${DURATION}s"
           
-          # Cek hasil build
+          # Cek hasil
           if [ -f build/app/outputs/flutter-apk/app-release.apk ] || \
              [ -f build/app/outputs/flutter-apk/app-debug.apk ] || \
              [ -f build/app/outputs/flutter-apk/app-arm64-v8a-release.apk ] || \
@@ -179,7 +211,7 @@ jobs:
             exit 1
           fi
 
-      # ─── 5. UPLOAD ARTIFACT ──────────────────────────────────────────
+      # ─── 10. UPLOAD ARTIFACT ──────────────────────────────────────────
       - name: 📤 Upload APK Artifact
         if: env.BUILD_SUCCESS == 'true'
         uses: actions/upload-artifact@v4
@@ -189,7 +221,7 @@ jobs:
             ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 7
 
-      # ─── 6. KIRIM KE RELEASE ──────────────────────────────────────────
+      # ─── 11. KIRIM KE RELEASE ─────────────────────────────────────────
       - name: 📦 Upload to Release
         if: env.BUILD_SUCCESS == 'true'
         env:
@@ -197,7 +229,6 @@ jobs:
         run: |
           cd $PROJECT_DIR
           
-          # Cari APK
           APK_FILE=$(find build/app/outputs/flutter-apk -name "*.apk" | head -1)
           if [ -z "$APK_FILE" ]; then
             echo "❌ APK file not found!"
@@ -208,13 +239,11 @@ jobs:
           APK_SIZE=$(du -h "$APK_FILE" | cut -f1)
           echo "📦 APK: $APK_NAME ($APK_SIZE)"
           
-          # Cari release ID
           RELEASE_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.tag }}" \
             | jq -r '.id // empty')
           
           if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            # Upload APK ke release
             curl -L \
               -X POST \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
@@ -224,7 +253,6 @@ jobs:
             
             echo "✅ APK uploaded to release!"
             
-            # Publish release
             curl -L -X PATCH \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
@@ -236,24 +264,21 @@ jobs:
             echo "⚠️ Release not found, saving as artifact only"
           fi
 
-      # ─── 7. SUCCESS NOTIFICATION ─────────────────────────────────────
+      # ─── 12. SUCCESS ──────────────────────────────────────────────────
       - name: ✅ Build Success
         if: env.BUILD_SUCCESS == 'true'
         run: |
           echo "🎉 Build Completed Successfully!"
           echo "Tag: ${{ github.event.inputs.tag }}"
           echo "Type: ${{ github.event.inputs.build_type }}"
-          echo "Time: $(date)"
 
-      # ─── 8. FAILURE HANDLING ─────────────────────────────────────────
+      # ─── 13. FAILURE ──────────────────────────────────────────────────
       - name: ❌ Build Failed
         if: failure()
         run: |
           echo "💀 Build Gagal!"
           echo "Tag: ${{ github.event.inputs.tag }}"
-          echo "Cek log di atas untuk detail error."
           
-          # Tampilkan error terakhir dari build.log
           if [ -f "$PROJECT_DIR/build.log" ]; then
             echo "=== LAST 50 LINES OF BUILD LOG ==="
             tail -50 "$PROJECT_DIR/build.log"
