@@ -1,15 +1,18 @@
-name: Keep Bot Alive
+name: 🔄 Keep Bot Alive
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: 🚀 Keep Alive
+      - name: 🚀 Keep Alive Ping
         run: |
-          echo "✅ Bot keep alive ping at $(date)"
-          curl -s "https://api.telegram.org/bot${{ secrets.BOT_TOKEN }}/getMe" || true
+          echo "✅ Bot masih hidup pada $(date)"
+          echo "🌐 Pinging GitHub API..."
+          curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" \
+            "https://api.github.com/repos/${{ github.repository }}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"
