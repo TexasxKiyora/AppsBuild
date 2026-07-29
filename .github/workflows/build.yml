@@ -1,4 +1,4 @@
-name: 🔥 Build Flutter APK (X-FCOLS Edition)
+name: 🔥 Build Flutter APK (COMPATIBLE VERSION)
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
 
     steps:
@@ -35,10 +35,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 🐦 Setup Flutter
+      # 🔥 PAKE FLUTTER 3.19.6 - SUPPORT package_info_plus 9.0.1
+      - name: 🐦 Setup Flutter (3.19.6)
         uses: subosito/flutter-action@v2.16.0
         with:
-          flutter-version: '3.24.0'
+          flutter-version: '3.19.6'
           channel: 'stable'
 
       - name: 📦 Setup Android SDK
@@ -58,35 +59,10 @@ jobs:
               unzip -q project.zip && rm project.zip
               echo "✅ Extract berhasil!"
             else
-              echo "❌ BUKAN ZIP! Isi file:" && head -c 200 project.zip
-              exit 1
+              echo "❌ BUKAN ZIP!" && exit 1
             fi
           else
             echo "❌ GAGAL DOWNLOAD!" && exit 1
-          fi
-
-      # 🔥 FIX: AUTO-DOWNGRADE package_info_plus
-      - name: 🔧 Fix package_info_plus compatibility
-        run: |
-          cd app
-          if [ -f "pubspec.yaml" ]; then
-            echo "📝 Checking pubspec.yaml..."
-            if grep -q "package_info_plus:" pubspec.yaml; then
-              echo "🔧 Found package_info_plus, downgrading to 8.0.0..."
-              sed -i 's/package_info_plus:.*/package_info_plus: ^8.0.0/' pubspec.yaml
-              echo "✅ package_info_plus downgraded to 8.0.0"
-            fi
-            
-            # TAMBAHKAN JUGA FIX UNTUK PLUGIN LAIN YANG SERING ERROR
-            if grep -q "share_plus:" pubspec.yaml; then
-              sed -i 's/share_plus:.*/share_plus: ^7.0.0/' pubspec.yaml
-              echo "✅ share_plus downgraded to 7.0.0"
-            fi
-            
-            if grep -q "device_info_plus:" pubspec.yaml; then
-              sed -i 's/device_info_plus:.*/device_info_plus: ^9.0.0/' pubspec.yaml
-              echo "✅ device_info_plus downgraded to 9.0.0"
-            fi
           fi
 
       - name: 📦 Dependencies & Build
