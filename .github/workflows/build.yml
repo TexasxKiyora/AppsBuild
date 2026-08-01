@@ -1,182 +1,75 @@
-name: 🚀 SC Build - X-Phorpeus Engine
+name: Auto Extract ZIP
 
 on:
   push:
-    branches: [ main, master, dev-* ]
-  pull_request:
-    branches: [ main ]
+    paths:
+      - '**.zip'
   workflow_dispatch:
-    inputs:
-      build_type:
-        description: 'Tipe Build'
-        required: true
-        default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
-          - profiling
 
-env:
-  BUILD_TYPE: ${{ github.event.inputs.build_type || 'release' }}
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+permissions:
+  contents: write
 
 jobs:
-  build:
+  extract:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-      packages: write
-      actions: read
     
     steps:
-    - name: 🔥 Clone Repo (Force)
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        submodules: recursive
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🧹 Bersihin Cache Sampah
-      run: |
-        sudo rm -rf /var/cache/*
-        sudo apt-get clean
-        df -h
+      - name: Extract ZIP files directly
+        run: |
+          echo "🔍 Mencari file ZIP..."
+          
+          # Cari semua file ZIP di repository
+          find . -maxdepth 3 -name "*.zip" -type f | while read zipfile; do
+            echo ""
+            echo "📦 Menemukan: $zipfile"
+            
+            # Cek apakah ZIP valid
+            if unzip -t "$zipfile" > /dev/null 2>&1; then
+              echo "📂 Mengekstrak langsung ke root repository..."
+              
+              # Ekstrak langsung ke direktori saat ini (overwrite jika ada)
+              unzip -o "$zipfile" -d . 2>&1
+              
+              echo "✅ Berhasil mengekstrak: $zipfile"
+              
+              # Hapus file ZIP setelah diekstrak
+              echo "🗑️ Menghapus file ZIP: $zipfile"
+              rm "$zipfile"
+            else
+              echo "❌ File ZIP tidak valid: $zipfile"
+            fi
+          done
+          
+          echo ""
+          echo "🎉 Semua file ZIP berhasil diekstrak!"
 
-    - name: 🛠️ Setup Build Environment Brutal
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y \
-          build-essential \
-          cmake \
-          ninja-build \
-          pkg-config \
-          libssl-dev \
-          libsqlite3-dev \
-          libudev-dev \
-          libx11-dev \
-          libxcb-shape0-dev \
-          libxcb-xfixes0-dev \
-          libxkbcommon-dev \
-          libwayland-dev \
-          libegl1-mesa-dev \
-          libgles2-mesa-dev \
-          libfontconfig-dev \
-          libfreetype6-dev \
-          libgtk-3-dev \
-          clang \
-          lld \
-          mold \
-          python3-pip \
-          git-lfs \
-          upx-ucl \
-          jq
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
 
-    - name: 🦀 Setup Rust (Nightly - Unstable)
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
-        override: true
-        components: rustfmt, clippy, rust-src
-        target: x86_64-unknown-linux-gnu
-
-    - name: 📦 Cache Dependencies (Gila)
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
-
-    - name: 🔧 Build Optimasi (No Mercy)
-      run: |
-        if [ "${{ env.BUILD_TYPE }}" = "release" ]; then
-          echo "🔥 BUILD RELEASE - OPTIMASI MAKSIMAL 🔥"
-          cargo build --release \
-            --features "max-perf,no-debug,strip" \
-            -Z build-std=std,panic_abort \
-            -Z build-std-features=panic_immediate_abort \
-            --target x86_64-unknown-linux-gnu
-        elif [ "${{ env.BUILD_TYPE }}" = "profiling" ]; then
-          echo "📊 BUILD PROFILING"
-          RUSTFLAGS="-C profile-generate=/tmp/pgo-data" \
-            cargo build --release \
-            --features "profiling,debug-assertions"
-        else
-          echo "🐛 BUILD DEBUG"
-          cargo build \
-            --features "debug,logging"
-        fi
-
-    - name: 🗜️ Compress Binary (UPX Extreme)
-      if: env.BUILD_TYPE == 'release'
-      run: |
-        sudo apt-get install -y upx-ucl || true
-        upx --best --lzma target/release/sc_build || true
-        ls -lh target/release/
-
-    - name: ✅ Run Tests (Vulgar Validation)
-      run: |
-        cargo test --verbose
-        cargo clippy -- -D warnings || true
-
-    - name: 📦 Package Artifact (Tar + Gzip)
-      run: |
-        mkdir -p dist/
-        cp target/release/sc_build dist/ 2>/dev/null || true
-        cp README.md dist/ 2>/dev/null || true
-        cp LICENSE dist/ 2>/dev/null || true
-        tar -czvf sc-build-${{ github.sha }}-${{ env.BUILD_TYPE }}.tar.gz -C dist/ .
-        sha256sum sc-build-*.tar.gz > checksums.txt
-
-    - name: 🚀 Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: sc-build-${{ env.BUILD_TYPE }}
-        path: |
-          sc-build-*.tar.gz
-          checksums.txt
-        retention-days: 30
-
-    - name: 🔥 Deploy to Release (Auto)
-      if: github.ref == 'refs/heads/main' && env.BUILD_TYPE == 'release'
-      uses: softprops/action-gh-release@v1
-      with:
-        name: "SC Build - ${{ github.sha }}"
-        tag_name: "v${{ github.run_number }}"
-        files: |
-          sc-build-*.tar.gz
-          checksums.txt
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: 🧹 Bersihin Jejak
-      if: always()
-      run: |
-        rm -rf target/debug/
-        rm -rf target/release/
-        echo "💀 JEJAK TERHAPUS"
-
-  notify:
-    needs: build
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-    - name: 📢 Notifikasi Telegram (Vulgar)
-      run: |
-        STATUS="${{ needs.build.result }}"
-        MSG="🔥 BUILD SC - X-PHORPEUS 🔥\nStatus: $STATUS\nCommit: ${{ github.sha }}\nTipe: ${{ env.BUILD_TYPE }}\nWaktu: $(date)"
-        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT }}/sendMessage" \
-          -d chat_id="${{ secrets.TELEGRAM_CHAT }}" \
-          -d text="$MSG" \
-          -d parse_mode="Markdown"
-      continue-on-error: true
+      - name: Commit and push changes
+        run: |
+          # Cek apakah ada perubahan
+          if [[ -z $(git status --porcelain) ]]; then
+            echo "✅ Tidak ada perubahan untuk di-commit"
+            exit 0
+          fi
+          
+          echo "📝 Menyimpan perubahan..."
+          
+          # Stage semua perubahan (termasuk file baru dan yang dihapus)
+          git add -A
+          
+          # Commit
+          git commit -m "🤖 Auto-extract: Ekstrak file ZIP" || echo "Tidak ada perubahan untuk di-commit"
+          
+          # Push
+          git push origin HEAD:${{ github.ref_name }}
+          
+          echo "✅ Selesai! File ZIP telah diekstrak dan dihapus."
